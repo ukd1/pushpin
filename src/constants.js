@@ -15,6 +15,11 @@ if (!USER) {
   throw new Error('No user name found')
 }
 
+export const PDF_DIALOG_OPTIONS = {
+  properties: ['openFile'],
+  filters: [{ name: 'PDF files', extensions: ['pdf'] }]
+}
+
 // We want these constants available from both the main and render threads.
 const app = electron.app || electron.remote.app
 export const USER_PATH = Path.join(app.getPath('userData'), 'pushpin-v01', USER)
