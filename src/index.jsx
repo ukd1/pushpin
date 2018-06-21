@@ -5,6 +5,7 @@ import Fs from 'fs'
 
 import { HYPERMERGE_PATH, WORKSPACE_URL_PATH } from './constants'
 import Hypermerge from './hypermerge'
+import RandomAccessFilesystem from './random-access-filesystem'
 import Content from './components/content'
 
 // We load these modules here so that the content registry will have them.
@@ -41,7 +42,8 @@ localStorage.removeItem('debug')
 EventEmitter.defaultMaxListeners = 500
 
 function initHypermerge(cb) {
-  window.hm = new Hypermerge({ storage: HYPERMERGE_PATH, port: 0 })
+  const rafs = new RandomAccessFilesystem({ dirPath: HYPERMERGE_PATH, maxOpenFiles: 1000 })
+  window.hm = new Hypermerge({ storage: rafs.storageFor.bind(rafs), port: 0 })
   window.hm.once('ready', () => {
     window.hm.joinSwarm()
     cb()
