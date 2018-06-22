@@ -290,9 +290,16 @@ export default class Board extends React.PureComponent {
     }
 
     if (contentType.type === 'pdf') {
-      this.fileDialog(PDF_DIALOG_OPTIONS, (path) => {
-        const cardId = this.createCard({ x, y, type: 'pdf', typeAttrs: { path } })
-        this.selectOnly(cardId)
+      dialog.showOpenDialog(PDF_DIALOG_OPTIONS, (paths) => {
+        // User aborted.
+        if (!paths) {
+          return
+        }
+        if (paths.length !== 1) {
+          throw new Error('Expected exactly one path?')
+        }
+
+        this.createPdfCardFromPath({ x, y }, paths[0])
       })
       return
     }
@@ -304,6 +311,23 @@ export default class Board extends React.PureComponent {
       typeAttrs: { text: '' }
     })
     this.selectOnly(cardId)
+  }
+
+  createPdfCardFromPath = ({ x, y }, path) => {
+    Hyperfile.write(path, (err, hyperfileId) => {
+      if (err) {
+        log(err)
+        return
+      }
+
+      const cardId = this.createCard({
+        x,
+        y,
+        type: 'pdf',
+        typeAttrs: { hyperfileId }
+      })
+      this.selectOnly(cardId)
+    })
   }
 
   createImageCardFromPath = ({ x, y }, path) => {
