@@ -20,14 +20,14 @@
 
 const Path = require('path')
 const FS = require('fs')
-const Debug = require('debug')
+// const Debug = require('debug')
 const mkdirp = require('mkdirp')
 const assert = require('assert')
 const Deque = require('double-ended-queue')
 
 const READWRITE = FS.constants.O_RDWR | FS.constants.O_CREAT
 
-const log = Debug('pushpin:random-access-filesystem')
+// const log = Debug('pushpin:random-access-filesystem')
 
 class PathWorker {
   constructor(fullPath) {
@@ -37,12 +37,12 @@ class PathWorker {
     this.control = 'stop'
     this.state = 'closed'
     this.fd = 0
-    this.ops = []
+    this.ops = new Deque()
     this.inFlightReads = 0
     this.inFlightWrites = 0
     this.startCb = null
     this.stopCb = null
-    this.log = (...args) => { log(this.fullPath, ...args) }
+    this.log = () => { }
   }
 
   add(op) {
@@ -54,8 +54,10 @@ class PathWorker {
   start(startCb) {
     this.log('start')
     this.control = 'start'
-    assert(!this.startCb)
-    this.startCb = startCb
+    if (startCb) {
+      assert(!this.startCb)
+      this.startCb = startCb
+    }
     this.tick()
   }
 
@@ -135,7 +137,7 @@ class PathWorker {
   // We aren't trying to serialize any reads or writes. YOLO!
   execIfOps() {
     this.log('execIfOps')
-    while (this.ops.length > 0) {
+    while (!this.ops.isEmpty()) {
       assert((this.state === 'opened') || (this.state === 'draining'))
       const op = this.ops.shift()
       const [type, offset, sizeOrData, cb] = op
@@ -153,9 +155,6 @@ class PathWorker {
           } else if (!read) {
             cb(new Error('Could not satisfy length'), null)
           } else {
-            if (read !== readSize) {
-              log('read.short?', read, readSize, offset)
-            }
             assert(read === readSize)
             cb(null, readData)
           }
@@ -225,17 +224,17 @@ class PathWorker {
 
 
 class PathInterface {
-  constructor(rafs, shortPath) {
+  constructor(rafs, pathWorker) {
     this.rafs = rafs
-    this.shortPath = shortPath
+    this.pathWorker = pathWorker
   }
 
   read(offset, size, readCb) {
-    this.rafs.op(this.shortPath, 'read', offset, size, readCb)
+    this.rafs.op(this.pathWorker, 'read', offset, size, readCb)
   }
 
   write(offset, data, writeCb) {
-    this.rafs.op(this.shortPath, 'write', offset, data, writeCb)
+    this.rafs.op(this.pathWorker, 'write', offset, data, writeCb)
   }
 }
 
@@ -247,9 +246,9 @@ class RandomAccessFilesystem {
     this.dirPath = dirPath
     this.maxOpenFiles = maxOpenFiles
     this.pathInterfaces = {}
-    this.pathWorkers = {}
     this.numActivePathWorkers = 0
     this.stoppableQueue = new Deque(maxOpenFiles)
+    this.scheduleQueue = new Deque()
   }
 
   fullPath(shortPath) {
@@ -258,64 +257,75 @@ class RandomAccessFilesystem {
 
   storageFor(shortPath) {
     if (!this.pathInterfaces[shortPath]) {
-      assert(!this.pathWorkers[shortPath])
       const fullPath = this.fullPath(shortPath)
-      this.pathInterfaces[shortPath] = new PathInterface(this, shortPath)
-      this.pathWorkers[shortPath] = new PathWorker(fullPath)
+      const pathWorker = new PathWorker(fullPath)
+      this.pathInterfaces[shortPath] = new PathInterface(this, pathWorker)
     }
     return this.pathInterfaces[shortPath]
   }
 
-  op(shortPath, type, offset, sizeOrData, cb) {
+  op(pathWorker, type, offset, sizeOrData, cb) {
     const op = [type, offset, sizeOrData, cb]
-    const pathWorker = this.pathWorkers[shortPath]
-    assert(pathWorker)
     pathWorker.add(op)
-    this.schedule(pathWorker)
+
+    this.scheduleQueue.push(pathWorker)
+    this.pull()
   }
 
-  schedule(pathWorker, backoff = 4) {
-    // If the worker is already started, we're fine.
-    if (pathWorker.control === 'start') {
-      return
+  pull() {
+    // Try to make progress through the schedule queue.
+    while (true) {
+      const emptyScheduleQueue = this.scheduleQueue.isEmpty()
+      if (emptyScheduleQueue) {
+        return
+      }
+
+      const fdHeadroom = this.numActivePathWorkers < this.maxOpenFiles
+      const emptyStoppableQueue = this.stoppableQueue.isEmpty()
+      if (!fdHeadroom && emptyStoppableQueue) {
+        return
+      }
+
+      const pathWorker = this.scheduleQueue.shift()
+
+      // If the worker is started, it'll execute the op in this lifecycle.
+      if (pathWorker.control === 'start') {
+        continue
+      }
+      assert(pathWorker.control === 'stop')
+
+      // If the worker is in the process of stopping, ask it to start again,
+      // but don't count it as a net new active worker.
+      if (pathWorker.state !== 'closed') {
+        pathWorker.start(null)
+        continue
+      }
+      assert(pathWorker.state === 'closed')
+
+      // If we have headroom, start the worker and count it as a new active one.
+      if (fdHeadroom) {
+        this.numActivePathWorkers += 1
+        pathWorker.start(() => {
+          this.stoppableQueue.push(pathWorker)
+          this.pull()
+        })
+        continue
+      }
+
+      // If we have workers to stop, do so, but we can't say we've actually
+      // scheduled our pathWorker, so put them back into the front of the queue.
+      if (!emptyStoppableQueue) {
+         const stoppableWorker = this.stoppableQueue.shift()
+         stoppableWorker.stop(() => {
+           this.numActivePathWorkers -= 1
+           this.pull()
+        })
+        this.scheduleQueue.unshift(pathWorker)
+        continue
+      }
+
+      assert(false)
     }
-
-    // If the worker is already stopping, we need to wait for it to finish
-    // to allow it to properly cycle.
-    assert(pathWorker.control === 'stop')
-    if (pathWorker.state !== 'closed') {
-      this.delay(pathWorker)
-      return
-    }
-
-    assert(pathWorker.state === 'closed')
-    // If there is file handle space available, use it to start the worker.
-    if (this.numActivePathWorkers < this.maxOpenFiles) {
-      this.numActivePathWorkers += 1
-      pathWorker.start(() => {
-        this.stoppableQueue.push(pathWorker)
-      })
-      return
-    }
-
-    // If there's a worker we can stop, do that to allow cycling. We won't be
-    // able to do anything right away though, so wait.
-    const stoppablePathWorker = this.stoppableQueue.shift()
-    if (stoppablePathWorker) {
-      stoppablePathWorker.stop(() => {
-        this.numActivePathWorkers -= 1
-      })
-      this.delay(pathWorker)
-      return
-    }
-
-    // Otherwise there is no fd space and all stopable workers are being
-    // stopped, but not yet stopped, so wait a bit.
-    this.delay(pathWorker)
-  }
-
-  delay(pathWorker) {
-    setTimeout(() => this.schedule(pathWorker), 4)
   }
 }
 
