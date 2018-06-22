@@ -1,8 +1,8 @@
+const RAF  = require('random-access-file')
 const RAFS = require('./random-access-filesystem')
 const assert = require('assert')
 
 const rafs = new RAFS({ dirPath: '/Users/mmcgrana/Desktop/rafs-data', maxOpenFiles: 500 })
-
 
 function getRandomInt(max) {
   return Math.floor(Math.random() * Math.floor(max));
@@ -11,6 +11,7 @@ function getRandomInt(max) {
 function test(path, j) {
   setTimeout(() => {
     const raf = rafs.storageFor(path)
+    // const raf = RAF(path)
     raf.write(0, Buffer.from('hello '), (err) => {
       if (err) { throw err }
       raf.write(6, Buffer.from('world!'), (err) => {
@@ -48,7 +49,7 @@ function test(path, j) {
 }
 
 for (let j = 0; j < 1; j++) {
-  for (let i = 0; i < 10000; i++) {
+  for (let i = 0; i < 5000; i++) {
     const path = `foobarbat${i}`
     test(path, j)
   }
