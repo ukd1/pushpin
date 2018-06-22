@@ -1,8 +1,13 @@
+// Test script to read + write a bunch of data.
+// Switch between random-access-file and random-access-filesystem to compare.
+
 const RAF  = require('random-access-file')
 const RAFS = require('./random-access-filesystem')
 const assert = require('assert')
+const Path = require('path')
 
-const rafs = new RAFS({ dirPath: '/Users/mmcgrana/Desktop/rafs-data', maxOpenFiles: 500 })
+const dirPath = '/Users/mmcgrana/Desktop/rafs-data'
+const rafs = new RAFS({ dirPath: dirPath, maxOpenFiles: 2000 })
 
 function getRandomInt(max) {
   return Math.floor(Math.random() * Math.floor(max));
@@ -11,7 +16,7 @@ function getRandomInt(max) {
 function test(path, j) {
   setTimeout(() => {
     const raf = rafs.storageFor(path)
-    // const raf = RAF(path)
+    // const raf = RAF(Path.join(dirPath, path))
     raf.write(0, Buffer.from('hello '), (err) => {
       if (err) { throw err }
       raf.write(6, Buffer.from('world!'), (err) => {
@@ -49,7 +54,7 @@ function test(path, j) {
 }
 
 for (let j = 0; j < 1; j++) {
-  for (let i = 0; i < 5000; i++) {
+  for (let i = 0; i < 2000; i++) {
     const path = `foobarbat${i}`
     test(path, j)
   }
